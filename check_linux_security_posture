@@ -1,0 +1,774 @@
+#!/usr/bin/perl
+
+# nagios check to return assorted security posture details on a Linux box
+# this check is intended to provide output that may be consumed by other services or reporting tools
+
+
+# CHANGE LOG
+# ----------
+# 2024-05-16	njeffrey	Script created
+
+
+# NOTES
+# -----
+#
+
+#
+#  This script is executed remotely on a monitored system by the NRPE or check_by_ssh methods available in nagios.
+#
+#  If you are using the check_by_ssh method, you will need a section in the services.cfg
+#  file on the nagios server that looks similar to the following.
+#  This assumes that you already have ssh key pairs configured.
+#   # Define a service to check Linux patch level
+#   define service{
+#           use                             generic-service
+#           hostgroup_name                  all_linux
+#           service_description             Linux security posture
+#           check_command                   check_by_ssh!"/usr/local/nagios/libexec/check_linux_security_posture"
+#           }
+#
+#  If you are using the check_nrpe method, you will need a section in the services.cfg
+#  file on the nagios server that looks similar to the following.
+#  This assumes that you already have ssh key pairs configured.
+#   define service{
+#           use                             generic-service
+#           hostgroup_name                  all_linux
+#           service_description             Linux security posture
+#           check_command                   check_nrpe!check_linux_security_posture
+#           }
+#
+#  If using NRPE, you will also need a section defining the NRPE command in the /usr/local/nagios/nrpe.cfg file that looks like this:
+#   command[check_linux_security_posture]=/usr/local/nagios/libexec/check_linux_security_posture
+
+
+
+
+use strict;                             #enforce good coding practices
+use Getopt::Long;                       #allow --long-switches to be used as parameters
+use Time::Local;			#core perl module for converting yyyy-mm-dd to epoch time
+
+
+# declare variables
+my ($OK,$WARN,$CRITICAL,$UNKNOWN);
+my ($uname,$CHECK_NAME,$default_warn_threshold,$default_critical_threshold);
+my ($output_filename,$output_message,$linux_version);
+my ($total_size_bytes,$free_size_bytes,$warn_threshold,$critical_threshold,$pct_used,$pct_free);
+my ($filesystem,$inodes,$pct_inodes,$nagios_return_code,$uname);
+my ($opt_h,$opt_w,$opt_c,$opt_v);
+my ($os,$cmd);
+my ($last_patched_days);
+my ($verbose,$common_output_data,$warn_output_data,$crit_output_data,$perf_data);
+my ($epoch,$dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks);
+my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst);
+my (%daemons,@monitored_daemons,$systemctl,$getenforce,$key);
+
+
+$linux_version              = "unknown";
+$CHECK_NAME                 = "Linux patch level";
+$default_warn_threshold     = "180";                    #if no parameter supplied, set default warn     level to 180 days
+$default_critical_threshold = "365";                    #if no parameter supplied, set default critical level to 365 days
+$verbose                    = "no";                     #yes/no variable to increase output for debugging
+$common_output_data         = "";                       #initialize variable
+$warn_output_data           = "";                       #initialize variable
+$crit_output_data           = "";                       #initialize variable
+$perf_data                  = "";
+$CHECK_NAME                 = "Linux patch level";
+#
+# Nagios return codes
+#
+$OK=            0;
+$WARN=          1;
+$CRITICAL=      2;
+$UNKNOWN=       3;
+
+
+
+
+
+sub get_options {
+   #
+   # this gets the command line parameters provided by the users
+   #
+   print "running get_options subroutine \n" if ($verbose eq "yes");
+   #
+   Getopt::Long::Configure('bundling');
+   GetOptions(
+      "h"   => \$opt_h, "help"       => \$opt_h,
+      "v"   => \$opt_v, "verbose"    => \$opt_v,
+      "w=s" => \$opt_w, "warning=s"  => \$opt_w, "warn=s" => \$opt_w,
+      "c=s" => \$opt_c, "critical=s" => \$opt_c, "crit=s" => \$opt_c,
+   );
+   #
+   # If the user did not supply a --warn= threshold, use the default.
+   #
+   if( defined( $opt_w ) ) {
+      $warn_threshold = $opt_w;
+   } else {
+      $warn_threshold = $default_warn_threshold;
+   }
+   #
+   # If the user did not supply a --critical= threshold, use the default.
+   #
+   if( defined( $opt_c ) ) {
+      $critical_threshold = $opt_c;
+   } else {
+      $critical_threshold = $default_critical_threshold;
+   }
+   if( defined( $opt_h ) ) {
+      print "Nagios plugin for determining Linux security posture \n";
+      print "Examples: \n";
+      print "   $0 --help    \n";
+      print "   $0 --verbose --warn=180 --critical=365 \n";
+      print "\n\n";
+      exit $UNKNOWN;
+   }
+   # If the user supplied -v or --verbose switch, use verbose output for debugging
+   if( defined( $opt_v ) ) {
+      $verbose = "yes";
+   }
+
+}                       #end of subroutine
+
+
+
+
+sub sanity_checks {
+   #
+   #
+   print "running sanity_checks subroutine \n" if ($verbose eq "yes");
+   #
+   # figure out where the df command is on this system (varies across UNIX flavors)
+   $uname = "unknown";
+   $uname = "/bin/uname"      if ( -e "/bin/uname" );
+   $uname = "/usr/bin/uname"  if ( -e "/usr/bin/uname" );
+   if ( ! -e $uname ) {
+      print "ERROR: Cannot find $uname binary \n";
+      exit $CRITICAL;
+   }
+   if ( ! -x $uname ) {
+      print "ERROR: $uname is not executable by the current user \n";
+      exit $CRITICAL;
+   }
+   if ( ! -e "/etc/os-release" ) {
+      print "ERROR: Cannot find /etc/os-release  \n";
+      exit $CRITICAL;
+   }
+   #
+   # confirm systemctl binary exists and is executable
+   $systemctl = "/usr/bin/systemctl";
+   if ( ! -e $systemctl ) {
+      print "ERROR: Cannot find $systemctl binary \n";
+      exit $CRITICAL;
+   }
+   if ( ! -x $systemctl ) {
+      print "ERROR: $systemctl is not executable by the current user \n";
+      exit $CRITICAL;
+   }
+   print "   found systemctl binary at $systemctl \n" if ($verbose eq "yes");
+   #
+   #
+   # getenforce may or may not exist (ie Ubuntu 22.04 and earlier did not have selinux)
+   $getenforce = "/usr/sbin/getenforce";
+   if ( -e $getenforce ) {
+      if ( ! -x $getenforce ) {
+         print "ERROR: $getenforce exists but is not executable by the current user \n";
+         exit $CRITICAL;
+      }
+      print "   found getenforce binary at $getenforce \n" if ($verbose eq "yes");
+   }
+   #
+}                                                       #end of subroutine
+
+
+
+
+sub check_for_output_file {
+   #
+   # a cron job may have already created the output file that we need
+   #
+   print "running check_for_output_file subroutine \n" if ($verbose eq "yes");
+   #
+   $output_filename = "/tmp/nagios.check_linux_security_posture.tmp";
+   #
+   # delete the output file if it is more than 60*60*24=86400 seconds old
+   if ( -e $output_filename ) {                                 #see if a cron job has already provided the info we need
+      ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks) = stat($output_filename); #get last modification time in seconds since the epoch
+      my $output_file_age = time - $mtime;                                 #figure out how many seconds old the file is
+      print "   output file $output_filename is $output_file_age seconds old \n" if ($verbose eq "yes");
+      if( $output_file_age >= 86400 ) {                                   #see if the file is more than 86400 seconds old
+         print "   deleting old copy of $output_filename \n" if ($verbose eq "yes");
+         unlink "$output_filename";                                     #delete the file if it is too old
+      }
+   }                                                                    #end of if block
+   #
+   if ( -e "$output_filename" ) {                               #see if a cron job has already provided the info we need
+      open (OUT,"$output_filename") or die "Cannot open $output_filename for reading $! \n";
+      while (<OUT>) {                                                   #read a line from the text file
+         $output_message = $_  if ( $_ =~ /[a-zA-Z]/);                  #get the content of the output file into a variable
+         print "   output message is $output_message \n" if ($verbose eq "yes");
+      }                                                                 #end of while loop
+      close OUT;                                                        #close filehandle
+      print $output_message;                                            #print the content of the output file
+      exit $OK;                   					#exit script with appropriate return code
+   }                                                                    #end of if block
+}                                                                       #end of subroutine
+
+
+
+
+sub print_to_outputfile {
+   #
+   print "running print_to_outputfile \n" if ($verbose eq "yes");
+   #
+   # This subroutine is called whenever an output message is printed, to confirm that the $output_file exists
+   #
+   # confirm the output message exists
+   $output_message = "$CHECK_NAME UNKNOWN - could not parse response from remote host \n" unless ($output_message);
+   #
+   # confirm the $output_filename variable is defined
+   unless ($output_filename) {
+      print "$CHECK_NAME UNKNOWN - the \$output_filename variable is not defined.  This might be a script bug. \n";
+      exit $UNKNOWN;                                                            #only get this far if OK/WARN/CRITICAL/UNKNOWN was not found in the output file
+   }                                                                            #end of unless block
+   #
+   if ( ! -e "$output_filename" ) {                                                     #only run this section if $output_filename does not already exist
+      print "   $output_filename not found - writing output message to $output_filename \n" if ($verbose eq "yes");
+      open (OUT,">$output_filename") or die "Cannot open $output_filename for writing: $! \n";
+      print OUT "$output_message";
+      close OUT;                                                                #close filehandle
+   }                                                                            #end of if block
+}                                                                               #end of subroutine
+
+
+
+
+sub determine_os {
+   #
+   print "Running determine_os subroutine \n" if ($verbose eq "yes");
+   #
+   $cmd = "$uname";
+   print "   running command: $cmd \n" if ($verbose eq "yes");
+   open(IN,"$cmd |");                                                   #open filehandle using command output
+   while (<IN>) {                                                       #read a line from the command output
+      if (/AIX/) {
+         $os          = "AIX";          #figure out OS-specific parameters for ps command
+      } elsif (/HP-UX/) {
+         $os          = "HP-UX";
+      } elsif (/Linux/) {
+         $os          = "Linux";
+      } elsif (/SunOS/) {
+         $os          = "SunOS";
+      } elsif (/FreeBSD/) {
+         $os          = "FreeBSD";
+      } elsif (/NetBSD/) {
+         $os          = "NetBSD";
+      } elsif (/OpenBSD/) {
+         $os          = "OpenBSD";
+      } elsif (/Darwin/) {
+         $os          = "Darwin";
+      } else {
+         print "ERROR: Cannot determine operating system \n";
+         exit $CRITICAL;
+      }                                                                 #end of if/elsif/else block
+   }                                                                    #end of while loop
+   close IN;                                                            #close filehandle
+   print "   operating system is $os \n" if ($verbose eq "yes");
+   $common_output_data = "$common_output_data OS=$os";                  #add OS to the info that will be included in the script output
+   unless ($os eq "Linux" ) {
+      print "$CHECK_NAME CRITICAL - this check only runs on Linux, not compatible with $os \n";
+      exit $CRITICAL;
+   }
+}                                               #end of subroutine
+
+
+
+
+
+
+
+
+
+sub get_linux_distro {   
+   #
+   # this subroutine figures out which linux distribution (RHEL, CentOS, Debian, Ubuntu, etc) is in use
+   #
+   print "running get_linux_distro subroutine \n" if ($verbose eq "yes");
+   #
+   print "   opening /etc/os-release file \n" if ($verbose eq "yes");
+   open (IN,"/etc/os-release") or die "Cannot open /etc/os-release for reading $! \n";                     #open filehandle 
+   while (<IN>) {                                       #read a line from filehandle
+      s/\"//g;                                                                  #get rid of embedded quotation marks to make the regex simpler
+      $linux_version = $1 if ( /PRETTY_NAME=(CentOS Stream [0-9]+)/ );
+      $linux_version = $1 if ( /PRETTY_NAME=(Ubuntu .*)/ );
+      $linux_version = $1 if ( /PRETTY_NAME=(Debian .*)/ );
+      $linux_version = $1 if ( /PRETTY_NAME=(Oracle Linux .*)/ );
+      $linux_version = $1 if ( /PRETTY_NAME=(Red Hat .*)/ );
+      $linux_version = $1 if ( /PRETTY_NAME=(Rocky .*)/ );
+      $linux_version = $1 if ( /PRETTY_NAME=(Alma .*)/ );
+   }
+   close IN;
+   #
+   # shorten the names to make parsing easier
+   if ($linux_version =~ /Red Hat Enterprise Linux ([0-9\.]+)/) {
+      $linux_version = "RHEL$1";
+   }
+   if ($linux_version =~ /Oracle Linux ([0-9\.]+)/) {
+      $linux_version = "OL$1";
+   }
+   if ($linux_version =~ /Oracle Linux Server ([0-9\.]+)/) {
+      $linux_version = "OL$1";
+   }
+   if ($linux_version =~ /CentOS Linux ([0-9\.]+)/) {
+      $linux_version = "CentOS$1";
+   }
+   if ($linux_version =~ /CentOS Stream ([0-9\.]+)/) {
+      $linux_version = "CentOS$1";
+   }
+   if ($linux_version =~ / /) {  #remove any spacesw
+      $linux_version =~ s/ //g;
+   }
+   #
+   print "   distro is $linux_version \n" if ($verbose eq "yes");
+}                                               #end of subroutine
+
+
+
+
+sub get_last_patch_date {   
+   #
+   # this subroutine figures out the last date the operating system was patched
+   #
+   print "running get_last_patch_date subroutine \n" if ($verbose eq "yes");
+   #
+   # for APT-based systems, the timestamp on this file will reflect the last time "apt update" was run.
+   #  ls -l /var/cache/apt/pkgcache.bin
+   #  -rw-r--r-- 1 root root 48463547 May 10 10:37 /var/cache/apt/pkgcache.bin
+   #
+   # For RPM-based systems (RHEL, CentOS, etc), use the following command to determine the last date that the system was patched:
+   #  $ rpm -qa -last | head 
+   #  powershell-7.3.3-1.rh.x86_64   Wed 12 Apr 2023 01:01:27 PM MDT
+   #  gpg-pubkey-be1229cf-5631588c   Wed 12 Apr 2023 01:01:22 PM MDT
+   #  kpartx-0.8.4-39.el8.x86_64     Wed 05 Apr 2023 08:55:57 AM MDT
+   #
+   $epoch = time();  								#number of seconds since the epoch
+   if (-f "/var/cache/apt/pkgcache.bin") {					#this file is updated after successful patching on Ubuntu/Debian
+      print "   found apt cache file /var/cache/apt/pkgcache.bin \n" if ($verbose eq "yes");
+       ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks) = stat("/var/cache/apt/pkgcache.bin"); #get last modification time in seconds since the epoch
+      $last_patched_days = $epoch - $mtime;                               	#mtime is last file modification time in seconds since the epoch
+      $last_patched_days = $last_patched_days/60/60/24;				#convert seconds to days
+      $last_patched_days = $last_patched_days*-1 if ($last_patched_days < 0);	#remove negative sign to avoid rounding to -0 instead of 0
+      $last_patched_days = sprintf("%.0f", $last_patched_days); 		#truncate to 0 decimal places, closest day is good enough
+      print "   last patched $last_patched_days days ago \n" if ($verbose eq "yes");
+   }										#end of if block
+   elsif (-f "/usr/bin/rpm" ) {
+      $cmd = "/usr/bin/rpm -qa --last | head -n 1";
+      print "   running command: $cmd \n" if ($verbose eq "yes");
+      open(IN,"$cmd |");                                                   	#open filehandle using command output
+      while (<IN>) {                                                       	#read a line from the command output
+         if (/([a-zA-Z0-9_\-\.]+) +([A-Za-z]+) ([0-9][0-9]) ([A-Za-z]+) ([0-9][0-9][0-9][0-9]) ([0-9]+):([0-9]+):([0-9]+)/) {
+            $mday=$3;
+            $mon=$4;
+            $year=$5;
+            $hour=$6;
+            $min=$7;
+            $sec=$8;
+            #
+            # convert text based month to number
+            $mon = "01" if $mon eq "Jan";
+            $mon = "02" if $mon eq "Feb";
+            $mon = "03" if $mon eq "Mar";
+            $mon = "04" if $mon eq "Apr";
+            $mon = "05" if $mon eq "May";
+            $mon = "06" if $mon eq "Jun";
+            $mon = "07" if $mon eq "Jul";
+            $mon = "08" if $mon eq "Aug";
+            $mon = "09" if $mon eq "Sep";
+            $mon = "10" if $mon eq "Oct";
+            $mon = "11" if $mon eq "Nov";
+            $mon = "12" if $mon eq "Dec";
+            #
+            # at this point we have the date in yyyymmdd hh:mm:ss format, now convert to seconds since epoch
+            $mtime = timelocal($sec,$min,$hour,$mday,$mon-1,$year);			#use the Time::Local core perl module to convert to seconds since epoch
+            #print $mtime,"\n",scalar localtime $time;
+            #
+            #convert seconds to days
+            $last_patched_days = $epoch - $mtime;                              	#mtime is last file modification time in seconds since the epoch
+            $last_patched_days = $last_patched_days/60/60/24;			#convert seconds to days
+            $last_patched_days = sprintf("%.0f", $last_patched_days); 		#truncate to 0 decimal places, closest day is good enough
+            print "   last patched $last_patched_days days ago \n" if ($verbose eq "yes");
+
+         }									#end of if block
+      }										#end of while loop
+      close IN;									#close filehandle
+   }										#end of elsif block
+   else {
+      $last_patched_days = 9999;						#should never get here
+   }										#end of else block
+}                                               				#end of subroutine
+
+
+
+sub get_selinux_status {   
+   #
+   # This subroutine figures out if selinux is active or not
+   # 
+   # Note that selinux is built into RHEL / CentOS / etc, but is not in Ubuntu until version 24.04, so only run this subroutine if selinux exists
+   #
+   # Since selinux is not a systemd service, so we check the status with the "getenforce" command,
+   # and then put the results into the %daemons hash to make it act like all the other daemons we monitor.
+   #
+   $key = "selinux";
+   $daemons{$key}{unit}        = $key;                         		#initialize hash element to avoid undef errors
+   $daemons{$key}{load}        = "unknown";                    		#initialize hash element to avoid undef errors
+   $daemons{$key}{active}      = "unknown";                    		#initialize hash element to avoid undef errors
+   $daemons{$key}{sub}         = "unknown";                    		#initialize hash element to avoid undef errors
+   $daemons{$key}{description} = "unknown";                 		#initialize hash element to avoid undef errors
+   #
+   # Confirm that selinux exists
+   if ( -e "$getenforce" ) {						#run this section if getenforce binary exists
+      $cmd = "$getenforce";
+      print "   running command: $cmd \n" if ($verbose eq "yes");
+      open(IN,"$cmd |");                                               	#open filehandle using command output
+      while (<IN>) {                                                   	#read a line from the command output
+         $daemons{$key}{active} = "Permissive" if (/Permissive/);      	#add hash element
+         $daemons{$key}{active} = "Enforcing"  if (/Enforcing/);      	#add hash element
+         $daemons{$key}{active} = "Disabled"   if (/Disabled/);      	#add hash element
+      } 							 	#end of while loop
+   } else {                                                             #run this section only if getenforce does not exist
+      $daemons{$key}{active} = "NotInstalled";                 		#set to NotInstalled if selinux is not part of this operating system
+   } 							 	   	#end of if/else block
+   print "   unit:$daemons{$key}{unit} state:$daemons{$key}{active} \n" if ($verbose eq "yes");
+   close IN;                                                         	#close filehandle
+}                                               			#end of subroutine
+
+
+sub get_aide_status {   
+   #
+   # This subroutine figures out if AIDE (Advanced Intrusion Detection Environment is active or not
+   # 
+   # Note that AIDE is not installed by default, so for most environments, there will be nothing to report.
+   #
+   # Since AIDE is not a systemd service, so we check the status by looking for /var/lib/aide/*.gz files
+   # and then put the results into the %daemons hash to make it act like all the other daemons we monitor.
+   #
+   $key = "aide";
+   $daemons{$key}{unit}        = $key;                         		#initialize hash element to avoid undef errors
+   $daemons{$key}{load}        = "unknown";                    		#initialize hash element to avoid undef errors
+   $daemons{$key}{active}      = "unknown";                    		#initialize hash element to avoid undef errors
+   $daemons{$key}{sub}         = "unknown";                    		#initialize hash element to avoid undef errors
+   $daemons{$key}{description} = "unknown";                 		#initialize hash element to avoid undef errors
+   #
+   # Confirm that AIDE is installed
+   if ( -d "/var/lib/aide" ) {						#run this section if /var/lib/aide/ directory exists
+      $cmd = "find /var/lib/aide -type f -mtime -30 -name *.gz | wc -l"; #look for *.gz files less than 30 days old, which indicates the AIDE database is being regularly updated
+      print "   running command: $cmd \n" if ($verbose eq "yes");
+      open(IN,"$cmd |");                                               	#open filehandle using command output
+      while (<IN>) {                                                   	#read a line from the command output
+         $daemons{$key}{active} = $1 if (/([0-9]+)/);      		#add hash element
+      } 							 	#end of while loop
+   } else {                                                             #run this section if /var/lib/aide/ folder does not exist
+      $daemons{$key}{active} = "no";                 			#set to "no" if not installed
+   } 							 	   	#end of if/else block
+   print "   unit:$daemons{$key}{unit} state:$daemons{$key}{active} \n" if ($verbose eq "yes");
+   close IN;                                                         	#close filehandle
+}                                               			#end of subroutine
+
+
+
+
+sub check_assorted_daemons {
+   #
+   print "Running check_assorted_daemons subroutine \n" if ($verbose eq "yes");
+   #
+   # This subroutine checks for assorted daemons that only run on a subset of the Linux boxes.
+   # If a particular daemon is found, it is added to the list of @monitored_damons
+   #
+   # Checking for cron daemon
+   # crond.service on RHEL/CentOS, cron.service on Debian/Ubuntu
+   if ( -f "/usr/lib/systemd/system/crond.service") {
+      push (@monitored_daemons,"crond.service");
+      print "   found /usr/lib/systemd/system/crond.service, adding crond.service to list of monitored daemons \n" if ($verbose eq "yes");
+   }
+   if ( -f "/usr/lib/systemd/system/cron.service") {
+      push (@monitored_daemons,"cron.service");
+      print "   found /usr/lib/systemd/system/cron.service, adding cron.service to list of monitored daemons \n" if ($verbose eq "yes");
+   }
+   #
+   # Checking for NTP daemon
+   # chronyd.service on RHEL/CentOS, timedatectl.service on Debian/Ubuntu
+   if ( -f "/usr/lib/systemd/system/chronyd.service") {
+      push (@monitored_daemons,"chronyd.service");
+      print "   found /usr/lib/systemd/system/chronyd.service, adding chronyd.service to list of monitored daemons \n" if ($verbose eq "yes");
+   }
+   if ( -f "/usr/lib/systemd/system/systemd-timesyncd.service") {
+      push (@monitored_daemons,"systemd-timesyncd.service");
+      print "   found /usr/lib/systemd/system/systemd-timesyncd.service, adding systemd-timesyncd to list of monitored daemons \n" if ($verbose eq "yes");
+   }
+   #
+   # Checking for firewall daemon
+   # firewalld.service on RHEL/CentOS, ufw.service on Debian/Ubuntu
+   if ( -f "/usr/lib/systemd/system/firewalld.service") {
+      push (@monitored_daemons,"firewalld.service");
+      print "   found /usr/lib/systemd/system/firewalld.service, adding firewalld.service to list of monitored daemons \n" if ($verbose eq "yes");
+   }
+   if ( -f "/usr/lib/systemd/system/ufw.service") {
+      push (@monitored_daemons,"ufw.service");
+      print "   found /usr/lib/systemd/system/ufw.service, adding ufw.service to list of monitored daemons \n" if ($verbose eq "yes");
+   }
+   #
+   # Checking for audit daemon
+   # only exists on RHEL derivatives, not Debian/Ubuntu
+   if ( -f "/usr/lib/systemd/system/auditd.service") {
+      push (@monitored_daemons,"auditd.service");
+      print "   found /usr/lib/systemd/system/auditd.service, adding auditd.service to list of monitored daemons \n" if ($verbose eq "yes");
+   }
+   #
+   # Checking for fapolicyd daemon
+   # only exists on RHEL derivatives, not Debian/Ubuntu
+   if ( -f "/usr/lib/systemd/system/fapolicyd.service") {
+      push (@monitored_daemons,"fapolicyd.service");
+      print "   found /usr/lib/systemd/system/fapolicyd.service, adding fapolicyd.service to list of monitored daemons \n" if ($verbose eq "yes");
+   }
+   #
+   # Checking for fail2ban daemon
+   # same name on RHEL derivatives and Debian derivatives
+   if ( -f "/usr/lib/systemd/system/fail2ban.service") {
+      push (@monitored_daemons,"fail2ban.service");
+      print "   found /usr/lib/systemd/system/fail2ban.service, adding fail2ban.service to list of monitored daemons \n" if ($verbose eq "yes");
+   }
+     #
+   # Checking for arcticwolfagent service
+   # same name on RHEL derivatives and Debian derivatives
+   if ( -f "/etc/systemd/system/arcticwolfagent.service") {
+      push (@monitored_daemons,"arcticwolfagent.service");
+      print "   found /etc/systemd/system/arcticwolfagent.service, adding arcticwolfagent.service to list of monitored daemons \n" if ($verbose eq "yes");
+   }
+   #
+   # Checking for sentinelone service
+   # same name on RHEL derivatives and Debian derivatives
+   if ( -f "/usr/lib/systemd/system/sentinelone.service") {
+      push (@monitored_daemons,"sentinelone.service");
+      print "   found /usr/lib/systemd/system/sentinelone.service, adding sentinelone.service to list of monitored daemons \n" if ($verbose eq "yes");
+   }
+   #
+   # Checking for falcon-sensor service (aka CrowdStrike agent)
+   # same name on RHEL derivatives and Debian derivatives
+   if ( -f "/usr/lib/systemd/system/falcon-sensor.service") {
+      push (@monitored_daemons,"falcon-sensor.service");
+      print "   found /usr/lib/systemd/system/falcon-sensor.service, adding falcon-sensor.service to list of monitored daemons \n" if ($verbose eq "yes");
+   }
+   #
+   # Checking for ClamAV antivirus
+   # same name on RHEL derivatives and Debian derivatives
+   if ( -f "/usr/lib/systemd/system/clamav-daemon.service") {
+      push (@monitored_daemons,"clamav-daemon.service");
+      print "   found /usr/lib/systemd/system/clamav-daemon.service, adding clamav-daemon.service to list of monitored daemons \n" if ($verbose eq "yes");
+   }
+   #
+   # Checking for Microsoft Defender for Endpoint
+   # same name on RHEL derivatives and Debian derivatives
+   if ( -f "/usr/lib/systemd/system/mdatp.service") {
+      push (@monitored_daemons,"mdatp.service");
+      print "   found /usr/lib/systemd/system/mdatp.service, adding mdatp.service to list of monitored daemons \n" if ($verbose eq "yes");
+   }
+}
+
+sub check_running_daemons {
+   #
+   print "Running check_running_daemons subroutine \n" if ($verbose eq "yes");
+   #
+   # Command output looks similar to:
+   # # systemctl list-units --all
+   # UNIT                            LOAD     ACTIVE   SUB       DESCRIPTION
+   # boot.mount                      loaded   active   mounted   /boot
+   # orabackup.mount                 loaded   active   mounted   /orabackup
+   # oraglobal.mount                 loaded   active   mounted   /oraglobal
+   # auditd.service                  loaded   active   running   Security Auditing Service
+   # chronyd.service                 loaded   active   running   NTP client/server
+   # crond.service                   loaded   active   running   Command Scheduler
+   # dbus.service                    loaded   active   running   D-Bus System Message Bus
+   # dracut-shutdown.service         loaded   active   exited    Restore /run/initramfs on shutdown
+   # fail2ban.service                loaded   active   running   Fail2Ban Service
+   # firewalld.service               loaded   active   running   firewalld - dynamic firewall daemon
+   # ngt_guest_agent.service         loaded   active   running   LSB: Starts, stops Nutanix Guest Agent.
+   # postfix.service                 loaded   active   running   Postfix Mail Transport Agent
+   # rsyslog.service                 loaded   inactive dead      System Logging Service
+   #
+   #
+   #
+   #
+   foreach $key (@monitored_daemons) {
+      print "   current key is $key \n" if ($verbose eq "yes");
+      $cmd = "$systemctl list-units --all";
+      print "   running command: $cmd \n" if ($verbose eq "yes");
+      open(IN,"$cmd |");                                                #open filehandle using command output
+      while (<IN>) {                                                    #read a line from the command output
+         next if (/UNIT +LOAD +ACTIVE +SUB +DESCRIPTION/);              #skip header line
+         s/\t/ /g;                                                      #replace tabs with spaces
+         s/ +/ /g;                                                      #replace multiple spaces with single space to make the regex simpler
+         #print $_;
+         if (/$key ([a-z]+) ([a-z]+) ([a-z]+) (.*)/) {
+            $daemons{$key}{unit}        = $key;                         #add hash element
+            $daemons{$key}{load}        = $1;                           #add hash element
+            $daemons{$key}{active}      = $2;                           #add hash element
+            $daemons{$key}{sub}         = $3;                           #add hash element
+            $daemons{$key}{description} = $4;                           #add hash element
+            print "   unit:$daemons{$key}{unit} load:$daemons{$key}{load} active:$daemons{$key}{active} sub:$daemons{$key}{sub} description:$daemons{$key}{description} \n" if ($verbose eq "yes");
+            $daemons{count}{running}++;                                 #increment counter of running daemons
+         }                                                              #end of if block
+      }                                                                 #end of while loop
+      close IN;                                                         #close filehandle
+   }                                                                    #end of foreach loop
+}                                                                       #end of subroutine
+
+ 
+
+sub print_output {
+   #
+   # this subroutine prints out the results of the nagios check
+   #
+   print "running print_output subroutine \n" if ($verbose eq "yes");
+   #
+   # The nagios performance data will be the same for all the outputs, so just put it in a variable that can be use by all the output options
+   # The format is:  label=value[UOM];[warn];[crit];[min];[max]
+   # On the "label=value" section is required.  The warn|crit|min|max entries are optional.
+   # You can have multiple items of perf data, just separate each section with a space
+   # UOM is Units Of Measurement.    Can be s=seconds B=bytes MB=megabytes GB=gigabytes %=percent c=counter
+   $perf_data = "days_since_patch=$last_patched_days;;;;";
+   #
+   # Start with a blank output message
+   $common_output_data = "";
+   #
+   # Add linux version
+   $common_output_data = "$common_output_data linux_version:$linux_version";
+   #
+   # Add days since last patch
+   $common_output_data = "$common_output_data days_since_patch:$last_patched_days date_of_last_patch:$year-$mon-$mday";
+   #
+   # Add selinux status, this is not a systemd service, so we check it a little differently.
+   foreach $key (sort keys %daemons) {
+      $common_output_data = "$common_output_data selinux:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "selinux" ); 
+   }
+   #
+   # Add firewall status
+   if ( -f "/usr/lib/systemd/system/firewalld.service") {
+      foreach $key (sort keys %daemons) {
+         $common_output_data = "$common_output_data firewall:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "firewalld.service" ); 
+      }
+   } elsif ( -f "/usr/lib/systemd/system/ufw.service") {
+      foreach $key (sort keys %daemons) {
+         $common_output_data = "$common_output_data firewall:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "ufw.service" ); 
+      }
+   } else {
+      $common_output_data = "$common_output_data firewall:unknown";
+   }
+   #
+   # Add fail2ban status
+   if ( -f "/usr/lib/systemd/system/fail2ban.service") {
+      foreach $key (sort keys %daemons) {
+         $common_output_data = "$common_output_data fail2ban:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "fail2ban.service" ); 
+      }
+   } else {
+      $common_output_data = "$common_output_data fail2ban:no";
+   }
+   #
+   # Add auditd status
+   if ( -f "/usr/lib/systemd/system/auditd.service") {
+      foreach $key (sort keys %daemons) {
+         $common_output_data = "$common_output_data auditd:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "auditd.service" ); 
+      }
+   } else {
+      $common_output_data = "$common_output_data auditd:no";
+   }
+   #
+   # Add fapolicyd status
+   if ( -f "/usr/lib/systemd/system/fapolicyd.service") {
+      foreach $key (sort keys %daemons) {
+         $common_output_data = "$common_output_data fapolicyd:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "fapolicyd.service" ); 
+      }
+   } else {
+      $common_output_data = "$common_output_data fapolicyd:no";
+   }
+   #
+   # Add AIDE (Advanced Intrusion Dection Environment) status, this is not a systemd service, so we check it a little differently.
+   foreach $key (sort keys %daemons) {
+      $common_output_data = "$common_output_data aide:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "aide" ); 
+   }
+   #
+   #
+   # Add ArcticWolf status
+   if ( -f "/etc/systemd/system/arcticwolfagent.service") {
+      foreach $key (sort keys %daemons) {
+         $common_output_data = "$common_output_data arcticwolf:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "arcticwolfagent.service" ); 
+      }
+   } else {
+      $common_output_data = "$common_output_data arcticwolf:no";
+   }
+   #
+   # Add SentinelOne status
+   if ( -f "/etc/systemd/system/sentinelone.service") {
+      foreach $key (sort keys %daemons) {
+         $common_output_data = "$common_output_data sentinelone:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "sentinelone.service" ); 
+      }
+   } else {
+      $common_output_data = "$common_output_data sentinelone:no";
+   }
+   #
+   # Add Crowdstrike Falcon Sensor status
+   if ( -f "/usr/lib/systemd/system/falcon-sensor.service") {
+      foreach $key (sort keys %daemons) {
+         $common_output_data = "$common_output_data crowdstrike:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "falcon-sensor.service" ); 
+      }
+   } else {
+      $common_output_data = "$common_output_data crowdstrike:no";
+   }
+   #
+   # Add ClamAV status
+   if ( -f "/usr/lib/systemd/system/clamav-daemon.service") {
+      foreach $key (sort keys %daemons) {
+         $common_output_data = "$common_output_data clamav:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "clamav-daemon.service" ); 
+      }
+   } else {
+      $common_output_data = "$common_output_data clamav:no";
+   }
+   #
+   # Add Microsoft Defender Endpoint status
+   if ( -f "/usr/lib/systemd/system/mdatp.service") {
+      foreach $key (sort keys %daemons) {
+         $common_output_data = "$common_output_data msdefender:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "mdatp.service" ); 
+      }
+   } else {
+      $common_output_data = "$common_output_data msdefender:no";
+   }
+   #
+   #
+   #
+
+   #
+   $output_message = "$common_output_data | $perf_data \n";
+   print "$output_message";       #print output to screen
+   print_to_outputfile;           #call subroutine to confirm the output is in the $output_filename used for subsequent script runs
+   exit $OK;
+}
+
+
+
+
+
+
+
+
+#    main body of program
+# -----------------------------------------------------------------
+get_options;
+sanity_checks;
+check_for_output_file;
+determine_os;
+get_linux_distro;
+get_last_patch_date;
+get_selinux_status;
+get_aide_status;
+check_assorted_daemons;
+check_running_daemons;
+print_output;
+
