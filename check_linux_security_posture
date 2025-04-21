@@ -8,6 +8,7 @@
 # ----------
 # 2024-05-16	njeffrey	Script created
 # 2024-07-17	njeffrey	Add detection for CentOS Linux
+# 2025-04-21	njeffrey	Adjust detection for AIDE
 
 
 # NOTES
@@ -458,16 +459,18 @@ sub get_aide_status {
    $daemons{$key}{load}        = "unknown";                    		#initialize hash element to avoid undef errors
    $daemons{$key}{active}      = "unknown";                    		#initialize hash element to avoid undef errors
    $daemons{$key}{sub}         = "unknown";                    		#initialize hash element to avoid undef errors
-   $daemons{$key}{description} = "unknown";                 		#initialize hash element to avoid undef errors
+   $daemons{$key}{description} = "unknown";                  		   #initialize hash element to avoid undef errors
    #
    # Confirm that AIDE is installed
    if ( -d "/var/lib/aide" ) {						#run this section if /var/lib/aide/ directory exists
-      $cmd = "find /var/lib/aide -type f -mtime -30 -name *.gz | wc -l"; #look for *.gz files less than 30 days old, which indicates the AIDE database is being regularly updated
-      print "   running command: $cmd \n" if ($verbose eq "yes");
-      open(IN,"$cmd |");                                               	#open filehandle using command output
-      while (<IN>) {                                                   	#read a line from the command output
-         $daemons{$key}{active} = $1 if (/([0-9]+)/);      		#add hash element
-      } 							 	#end of while loop
+      $daemons{$key}{active} = "yes";           #Future enhancement: we really only know if AIDE is installed, not if it is actively running
+      # the following command requires root privileges because the directory permissions are drwx------
+      #$cmd = "find /var/lib/aide -type f -mtime -30 -name *.gz | wc -l"; #look for *.gz files less than 30 days old, which indicates the AIDE database is being regularly updated
+      #print "   running command: $cmd \n" if ($verbose eq "yes");
+      #open(IN,"$cmd |");                                               	#open filehandle using command output
+      #while (<IN>) {                                                   	#read a line from the command output
+      #   $daemons{$key}{active} = $1 if (/([0-9]+)/);      		#add hash element
+      #} 							 	#end of while loop
    } else {                                                             #run this section if /var/lib/aide/ folder does not exist
       $daemons{$key}{active} = "no";                 			#set to "no" if not installed
    } 							 	   	#end of if/else block
