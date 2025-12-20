@@ -9,6 +9,7 @@
 # 2024-05-16	njeffrey	Script created
 # 2024-07-17	njeffrey	Add detection for CentOS Linux
 # 2025-04-21	njeffrey	Adjust detection for AIDE
+# 2025-12-19	njeffrey	Add detection for apparmor on Ubuntu
 
 
 # NOTES
@@ -62,7 +63,7 @@ my ($last_patched_days);
 my ($verbose,$common_output_data,$warn_output_data,$crit_output_data,$perf_data);
 my ($epoch,$dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks);
 my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst);
-my (%daemons,@monitored_daemons,$systemctl,$getenforce,$key);
+my (%daemons,@monitored_daemons,$systemctl,$getenforce,$aa_status,$key);
 
 
 $linux_version              = "unknown";
@@ -177,6 +178,18 @@ sub sanity_checks {
          exit $CRITICAL;
       }
       print "   found getenforce binary at $getenforce \n" if ($verbose eq "yes");
+   }
+   #
+   #
+   # aa-status may or may not exist 
+   # NOTE that perl variable names should not contain dashes, so we use an underscore instead of dash
+   $aa_status = "/usr/sbin/aa-status";
+   if ( -e $aa_status ) {
+      if ( ! -x $aa_status ) {
+         print "ERROR: $aa_status exists but is not executable by the current user \n";
+         exit $CRITICAL;
+      }
+      print "   found aa-status binary at $aa_status \n" if ($verbose eq "yes");
    }
    #
 }                                                       #end of subroutine
@@ -445,6 +458,48 @@ sub get_selinux_status {
 }                                               			#end of subroutine
 
 
+
+
+#sub get_apparmor_status {   
+#   #
+#   # This subroutine figures out if apparmor is active or not
+#   # 
+#   # Note that apparmor is built into Debian / Ubuntu, essentially their version of selinux for Mandatory Access Control
+#   #
+#   # Since apparmor is a systemd service, we can check it with systemctl, 
+#   # and then put the results into the %daemons hash to make it act like all the other daemons we monitor.
+#   #
+#   $key = "apparmor";
+#   $daemons{$key}{unit}        = $key;                         		#initialize hash element to avoid undef errors
+#   $daemons{$key}{load}        = "unknown";                    		#initialize hash element to avoid undef errors
+#   $daemons{$key}{active}      = "unknown";                    		#initialize hash element to avoid undef errors
+#   $daemons{$key}{sub}         = "unknown";                    		#initialize hash element to avoid undef errors
+#   $daemons{$key}{description} = "unknown";                 		#initialize hash element to avoid undef errors
+#   #
+#   # Confirm that apparmor exists
+#   if ( -e "$aa_statuse" ) {						#run this section if getenforce binary exists
+#      $cmd = "$getenforce";
+#      print "   running command: $cmd \n" if ($verbose eq "yes");
+#      open(IN,"$cmd |");                                               	#open filehandle using command output
+#      while (<IN>) {                                                   	#read a line from the command output
+#         $daemons{$key}{active} = "Permissive" if (/Permissive/);      	#add hash element
+#         $daemons{$key}{active} = "Enforcing"  if (/Enforcing/);      	#add hash element
+#         $daemons{$key}{active} = "Disabled"   if (/Disabled/);      	#add hash element
+#      } 							 	#end of while loop
+#   } else {                                                             #run this section only if getenforce does not exist
+#      $daemons{$key}{active} = "NotInstalled";                 		#set to NotInstalled if selinux is not part of this operating system
+#   } 							 	   	#end of if/else block
+#   print "   unit:$daemons{$key}{unit} state:$daemons{$key}{active} \n" if ($verbose eq "yes");
+#   close IN;                                                         	#close filehandle
+#}                                               			#end of subroutine
+
+
+
+
+
+
+
+
 sub get_aide_status {   
    #
    # This subroutine figures out if AIDE (Advanced Intrusion Detection Environment is active or not
@@ -533,6 +588,13 @@ sub check_assorted_daemons {
    if ( -f "/usr/lib/systemd/system/fapolicyd.service") {
       push (@monitored_daemons,"fapolicyd.service");
       print "   found /usr/lib/systemd/system/fapolicyd.service, adding fapolicyd.service to list of monitored daemons \n" if ($verbose eq "yes");
+   }
+   #
+   # Checking for apparmor daemon
+   # only exists on Debian derivatives, not RHEL
+   if ( -f "/usr/lib/systemd/system/apparmor.service") {
+      push (@monitored_daemons,"apparmor.service");
+      print "   found /usr/lib/systemd/system/apparmor.service, adding apparmor.service to list of monitored daemons \n" if ($verbose eq "yes");
    }
    #
    # Checking for fail2ban daemon
@@ -693,6 +755,15 @@ sub print_output {
       }
    } else {
       $common_output_data = "$common_output_data fapolicyd:no";
+   }
+   #
+   # Add apparmor status
+   if ( -f "/usr/lib/systemd/system/apparmor.service") {
+      foreach $key (sort keys %daemons) {
+         $common_output_data = "$common_output_data apparmor:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "apparmor.service" ); 
+      }
+   } else {
+      $common_output_data = "$common_output_data apparmor:no";
    }
    #
    # Add AIDE (Advanced Intrusion Dection Environment) status, this is not a systemd service, so we check it a little differently.
