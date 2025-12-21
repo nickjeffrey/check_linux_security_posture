@@ -4,6 +4,14 @@
 # this check is intended to provide output that may be consumed by other services or reporting tools
 
 
+# OUTSTANDING TASKS
+# -----------------
+# - add an optional config file with max_days_since_patch require_selinux require_apparmor require_fail2ban , etc, etc.
+# -  $warn_threshold and $crit_threshold are never used
+# -  this script looks for /usr/bin/rpm for RHEL-derived distros, but Fedora only has /uar/bin/dnf, add some logic to support Fedora
+# -  the get_last_patch_date subroutine calculates the yyyy-dd-mm date of last patch for RPM-based distros, but not for APT-based distros
+
+
 # CHANGE LOG
 # ----------
 # 2024-05-16	njeffrey	Script created
@@ -63,11 +71,11 @@ my ($last_patched_days);
 my ($verbose,$common_output_data,$warn_output_data,$crit_output_data,$perf_data);
 my ($epoch,$dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks);
 my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst);
-my (%daemons,@monitored_daemons,$systemctl,$getenforce,$aa_status,$key);
+my (%daemons,@monitored_daemons,$systemctl,$getenforce,$apparmor_status,$key);
 
 
 $linux_version              = "unknown";
-$CHECK_NAME                 = "Linux patch level";
+$CHECK_NAME                 = "Linux security posture";
 $default_warn_threshold     = "180";                    #if no parameter supplied, set default warn     level to 180 days
 $default_critical_threshold = "365";                    #if no parameter supplied, set default critical level to 365 days
 $verbose                    = "no";                     #yes/no variable to increase output for debugging
@@ -75,7 +83,6 @@ $common_output_data         = "";                       #initialize variable
 $warn_output_data           = "";                       #initialize variable
 $crit_output_data           = "";                       #initialize variable
 $perf_data                  = "";
-$CHECK_NAME                 = "Linux patch level";
 #
 # Nagios return codes
 #
@@ -181,15 +188,14 @@ sub sanity_checks {
    }
    #
    #
-   # aa-status may or may not exist 
-   # NOTE that perl variable names should not contain dashes, so we use an underscore instead of dash
-   $aa_status = "/usr/sbin/aa-status";
-   if ( -e $aa_status ) {
-      if ( ! -x $aa_status ) {
-         print "ERROR: $aa_status exists but is not executable by the current user \n";
+   # apparmor_status may or may not exist 
+   $apparmor_status = "/usr/sbin/apparmor_status";
+   if ( -e $apparmor_status ) {
+      if ( ! -x $apparmor_status ) {
+         print "ERROR: $apparmor_status exists but is not executable by the current user \n";
          exit $CRITICAL;
       }
-      print "   found aa-status binary at $aa_status \n" if ($verbose eq "yes");
+      print "   found apparmor-status binary at $apparmor_status \n" if ($verbose eq "yes");
    }
    #
 }                                                       #end of subroutine
@@ -369,14 +375,14 @@ sub get_last_patch_date {
    $epoch = time();  								#number of seconds since the epoch
    if (-f "/var/cache/apt/pkgcache.bin") {					#this file is updated after successful patching on Ubuntu/Debian
       print "   found apt cache file /var/cache/apt/pkgcache.bin \n" if ($verbose eq "yes");
-       ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks) = stat("/var/cache/apt/pkgcache.bin"); #get last modification time in seconds since the epoch
+      ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks) = stat("/var/cache/apt/pkgcache.bin"); #get last modification time in seconds since the epoch
       $last_patched_days = $epoch - $mtime;                               	#mtime is last file modification time in seconds since the epoch
       $last_patched_days = $last_patched_days/60/60/24;				#convert seconds to days
       $last_patched_days = $last_patched_days*-1 if ($last_patched_days < 0);	#remove negative sign to avoid rounding to -0 instead of 0
       $last_patched_days = sprintf("%.0f", $last_patched_days); 		#truncate to 0 decimal places, closest day is good enough
       print "   last patched $last_patched_days days ago \n" if ($verbose eq "yes");
    }										#end of if block
-   elsif (-f "/usr/bin/rpm" ) {
+   elsif (-f "/usr/bin/rpm") {							#RHEL and derivatives may use rpm or dnf
       $cmd = "/usr/bin/rpm -qa --last | head -n 1";
       print "   running command: $cmd \n" if ($verbose eq "yes");
       open(IN,"$cmd |");                                                   	#open filehandle using command output
@@ -426,6 +432,8 @@ sub get_last_patch_date {
 
 sub get_selinux_status {   
    #
+   print "running get_selinux_status subroutine \n" if ($verbose eq "yes");
+   #
    # This subroutine figures out if selinux is active or not
    # 
    # Note that selinux is built into RHEL / CentOS / etc, but is not in Ubuntu until version 24.04, so only run this subroutine if selinux exists
@@ -460,47 +468,11 @@ sub get_selinux_status {
 
 
 
-#sub get_apparmor_status {   
-#   #
-#   # This subroutine figures out if apparmor is active or not
-#   # 
-#   # Note that apparmor is built into Debian / Ubuntu, essentially their version of selinux for Mandatory Access Control
-#   #
-#   # Since apparmor is a systemd service, we can check it with systemctl, 
-#   # and then put the results into the %daemons hash to make it act like all the other daemons we monitor.
-#   #
-#   $key = "apparmor";
-#   $daemons{$key}{unit}        = $key;                         		#initialize hash element to avoid undef errors
-#   $daemons{$key}{load}        = "unknown";                    		#initialize hash element to avoid undef errors
-#   $daemons{$key}{active}      = "unknown";                    		#initialize hash element to avoid undef errors
-#   $daemons{$key}{sub}         = "unknown";                    		#initialize hash element to avoid undef errors
-#   $daemons{$key}{description} = "unknown";                 		#initialize hash element to avoid undef errors
-#   #
-#   # Confirm that apparmor exists
-#   if ( -e "$aa_statuse" ) {						#run this section if getenforce binary exists
-#      $cmd = "$getenforce";
-#      print "   running command: $cmd \n" if ($verbose eq "yes");
-#      open(IN,"$cmd |");                                               	#open filehandle using command output
-#      while (<IN>) {                                                   	#read a line from the command output
-#         $daemons{$key}{active} = "Permissive" if (/Permissive/);      	#add hash element
-#         $daemons{$key}{active} = "Enforcing"  if (/Enforcing/);      	#add hash element
-#         $daemons{$key}{active} = "Disabled"   if (/Disabled/);      	#add hash element
-#      } 							 	#end of while loop
-#   } else {                                                             #run this section only if getenforce does not exist
-#      $daemons{$key}{active} = "NotInstalled";                 		#set to NotInstalled if selinux is not part of this operating system
-#   } 							 	   	#end of if/else block
-#   print "   unit:$daemons{$key}{unit} state:$daemons{$key}{active} \n" if ($verbose eq "yes");
-#   close IN;                                                         	#close filehandle
-#}                                               			#end of subroutine
-
-
-
-
-
-
 
 
 sub get_aide_status {   
+   #
+   print "running get_aide_status subroutine \n" if ($verbose eq "yes");
    #
    # This subroutine figures out if AIDE (Advanced Intrusion Detection Environment is active or not
    # 
@@ -640,6 +612,8 @@ sub check_assorted_daemons {
    }
 }
 
+
+
 sub check_running_daemons {
    #
    print "Running check_running_daemons subroutine \n" if ($verbose eq "yes");
@@ -713,8 +687,21 @@ sub print_output {
    $common_output_data = "$common_output_data days_since_patch:$last_patched_days date_of_last_patch:$year-$mon-$mday";
    #
    # Add selinux status, this is not a systemd service, so we check it a little differently.
-   foreach $key (sort keys %daemons) {
-      $common_output_data = "$common_output_data selinux:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "selinux" ); 
+   if (-e "$getenforce") {  			#confirm we are on an rpm-based Linux distro
+      foreach $key (sort keys %daemons) {
+         $common_output_data = "$common_output_data selinux:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "selinux" ); 
+      }
+   }
+   #
+   # Add apparmor status
+   if ( -e "/var/cache/apt/pkgcache.bin") {    #confirm we are on an apt-based Linux distro
+      if ( -f "/usr/lib/systemd/system/apparmor.service") {
+         foreach $key (sort keys %daemons) {
+            $common_output_data = "$common_output_data apparmor:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "apparmor.service" ); 
+         }
+      } else {
+         $common_output_data = "$common_output_data apparmor:NotInstalled";
+      }
    }
    #
    # Add firewall status
@@ -755,15 +742,6 @@ sub print_output {
       }
    } else {
       $common_output_data = "$common_output_data fapolicyd:no";
-   }
-   #
-   # Add apparmor status
-   if ( -f "/usr/lib/systemd/system/apparmor.service") {
-      foreach $key (sort keys %daemons) {
-         $common_output_data = "$common_output_data apparmor:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "apparmor.service" ); 
-      }
-   } else {
-      $common_output_data = "$common_output_data apparmor:no";
    }
    #
    # Add AIDE (Advanced Intrusion Dection Environment) status, this is not a systemd service, so we check it a little differently.
