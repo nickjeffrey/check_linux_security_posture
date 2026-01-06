@@ -611,6 +611,12 @@ sub check_assorted_daemons {
       push (@monitored_daemons,"mdatp.service");
       print "   found /usr/lib/systemd/system/mdatp.service, adding mdatp.service to list of monitored daemons \n" if ($verbose eq "yes");
    }
+   #
+   # Checking for ManageEngine Unified Endpoint Management (UEMS) Agent (also known as Desktop Central Agent)
+   if ( (-f "/usr/lib/systemd/system/dcservice.service") || (-f "/etc/systemd/system/dcservice.service") ) {
+      push (@monitored_daemons,"dcservice.service");
+      print "   adding dcservice.service to list of monitored daemons \n" if ($verbose eq "yes");
+   }
 }
 
 
