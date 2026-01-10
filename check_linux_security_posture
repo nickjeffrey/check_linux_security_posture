@@ -68,7 +68,7 @@ my ($total_size_bytes,$free_size_bytes,$warn_threshold,$critical_threshold,$pct_
 my ($filesystem,$inodes,$pct_inodes,$nagios_return_code,$uname);
 my ($opt_h,$opt_w,$opt_c,$opt_v);
 my ($os,$cmd);
-my ($last_patched_days);
+my ($last_patched_days,$pending_security_updates);
 my ($verbose,$common_output_data,$warn_output_data,$crit_output_data,$perf_data);
 my ($epoch,$dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks);
 my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst);
@@ -430,6 +430,23 @@ sub get_last_patch_date {
 }                                               				#end of subroutine
 
 
+sub get_pending_security_updates {   
+   #
+   # this subroutine figures if there are any pending security updates
+   # this reads the temporary file left behind by the check_linux_security_updates script
+   #
+   print "running get_pending_security_updates subroutine \n" if ($verbose eq "yes");
+   #
+   $pending_security_updates = "unknown";         #initialize variable
+   if (-f "/tmp/check_linux_security_updates.tmp") {
+      $pending_security_updates = 0;         #recast variable as numeric now that we know the file exists
+      open(IN,"/tmp/check_linux_security_updates.tmp");               	#open filehandle  
+      while (<IN>) {                                                   	#read a line from the command output
+         $pending_security_updates++;                                 #increment counter variable
+      } 							 	#end of while loop
+      close IN;               #close filehandle
+   }
+}                                               				#end of subroutine
 
 sub get_selinux_status {   
    #
@@ -693,6 +710,9 @@ sub print_output {
    # Add days since last patch
    $common_output_data = "$common_output_data days_since_patch:$last_patched_days date_of_last_patch:$year-$mon-$mday";
    #
+   # Add any pending security updates
+   $common_output_data = "$common_output_data pending_security_updates:$pending_security_updates";
+   #
    # Add selinux status, this is not a systemd service, so we check it a little differently.
    if (-e "$getenforce") {  			#confirm we are on an rpm-based Linux distro
       foreach $key (sort keys %daemons) {
@@ -837,6 +857,7 @@ check_for_output_file;
 determine_os;
 get_linux_distro;
 get_last_patch_date;
+get_pending_security_updates;
 get_selinux_status;
 get_aide_status;
 check_assorted_daemons;
