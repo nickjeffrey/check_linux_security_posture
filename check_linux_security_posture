@@ -20,6 +20,7 @@
 # 2025-12-19	njeffrey	Add detection for apparmor on Ubuntu
 # 2026/01/06	njeffrey	Add dcservice.service for ManageEngine Unified Endpoint Management (UEMS) Agent (also known as Desktop Central Agent)
 # 2026/01/08	njeffrey	Add $pending_security_updates
+# 2026/01/19	njeffrey	Add sssd.service for System Security Services Daemon
 
 
 # NOTES
@@ -635,6 +636,13 @@ sub check_assorted_daemons {
       push (@monitored_daemons,"dcservice.service");
       print "   adding dcservice.service to list of monitored daemons \n" if ($verbose eq "yes");
    }
+   #
+   # Checking for System Security Services Daemon
+   if ( (-f "/usr/lib/systemd/system/sssd.service") || (-f "/etc/systemd/system/sssd.service") ) {
+      push (@monitored_daemons,"sssd.service");
+      print "   adding sssd.service to list of monitored daemons \n" if ($verbose eq "yes");
+   }
+
 }
 
 
@@ -752,6 +760,15 @@ sub print_output {
       }
    } else {
       $common_output_data = "$common_output_data fail2ban:no";
+   }
+   #
+   # Add sssd status
+   if ( (-f "/usr/lib/systemd/system/sssd.service") || (-f "/etc/systemd/system/sssd.service") ) {
+      foreach $key (sort keys %daemons) {
+         $common_output_data = "$common_output_data sssd:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "sssd.service" ); 
+      }
+   } else {
+      $common_output_data = "$common_output_data sssd:no";
    }
    #
    # Add auditd status
