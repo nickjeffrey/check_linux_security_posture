@@ -506,7 +506,7 @@ sub get_aide_status {
    $daemons{$key}{load}        = "unknown";                    		#initialize hash element to avoid undef errors
    $daemons{$key}{active}      = "unknown";                    		#initialize hash element to avoid undef errors
    $daemons{$key}{sub}         = "unknown";                    		#initialize hash element to avoid undef errors
-   $daemons{$key}{description} = "unknown";                  		   #initialize hash element to avoid undef errors
+   $daemons{$key}{description} = "unknown";                  	  	#initialize hash element to avoid undef errors
    #
    # Confirm that AIDE is installed
    if ( -d "/var/lib/aide" ) {						#run this section if /var/lib/aide/ directory exists
@@ -514,8 +514,8 @@ sub get_aide_status {
       # the following command requires root privileges because the directory permissions are drwx------
       #$cmd = "find /var/lib/aide -type f -mtime -30 -name *.gz | wc -l"; #look for *.gz files less than 30 days old, which indicates the AIDE database is being regularly updated
       #print "   running command: $cmd \n" if ($verbose eq "yes");
-      #open(IN,"$cmd |");                                               	#open filehandle using command output
-      #while (<IN>) {                                                   	#read a line from the command output
+      #open(IN,"$cmd |");                                              	#open filehandle using command output
+      #while (<IN>) {                                                  	#read a line from the command output
       #   $daemons{$key}{active} = $1 if (/([0-9]+)/);      		#add hash element
       #} 							 	#end of while loop
    } else {                                                             #run this section if /var/lib/aide/ folder does not exist
@@ -673,6 +673,13 @@ sub check_running_daemons {
    #
    foreach $key (@monitored_daemons) {
       print "   current key is $key \n" if ($verbose eq "yes");
+      #
+      $daemons{$key}{unit}        = $key;                         	#initialize hash element to avoid undef errors
+      $daemons{$key}{load}        = "unknown";                         	#initialize hash element to avoid undef errors
+      $daemons{$key}{active}      = "no";                        	#initialize hash element to avoid undef errors
+      $daemons{$key}{sub}         = "unknown";                         	#initialize hash element to avoid undef errors
+      $daemons{$key}{description} = "unknown";                         	#initialize hash element to avoid undef errors
+      #
       $cmd = "$systemctl list-units --all";
       print "   running command: $cmd \n" if ($verbose eq "yes");
       open(IN,"$cmd |");                                                #open filehandle using command output
@@ -758,8 +765,6 @@ sub print_output {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data fail2ban:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "fail2ban.service" ); 
       }
-   } else {
-      $common_output_data = "$common_output_data fail2ban:no";
    }
    #
    # Add sssd status
@@ -767,8 +772,6 @@ sub print_output {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data sssd:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "sssd.service" ); 
       }
-   } else {
-      $common_output_data = "$common_output_data sssd:no";
    }
    #
    # Add auditd status
@@ -776,8 +779,6 @@ sub print_output {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data auditd:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "auditd.service" ); 
       }
-   } else {
-      $common_output_data = "$common_output_data auditd:no";
    }
    #
    # Add fapolicyd status
@@ -785,8 +786,6 @@ sub print_output {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data fapolicyd:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "fapolicyd.service" ); 
       }
-   } else {
-      $common_output_data = "$common_output_data fapolicyd:no";
    }
    #
    # Add AIDE (Advanced Intrusion Dection Environment) status, this is not a systemd service, so we check it a little differently.
@@ -800,8 +799,6 @@ sub print_output {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data arcticwolf:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "arcticwolfagent.service" ); 
       }
-   } else {
-      $common_output_data = "$common_output_data arcticwolf:no";
    }
    #
    # Add SentinelOne status
@@ -809,8 +806,6 @@ sub print_output {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data sentinelone:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "sentinelone.service" ); 
       }
-   } else {
-      $common_output_data = "$common_output_data sentinelone:no";
    }
    #
    # Add Crowdstrike Falcon Sensor status
@@ -818,8 +813,6 @@ sub print_output {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data crowdstrike:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "falcon-sensor.service" ); 
       }
-   } else {
-      $common_output_data = "$common_output_data crowdstrike:no";
    }
    #
    # Add ClamAV status
@@ -827,8 +820,6 @@ sub print_output {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data clamav:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "clamav-daemon.service" ); 
       }
-   } else {
-      $common_output_data = "$common_output_data clamav:no";
    }
    #
    # Add Microsoft Defender Endpoint status
@@ -836,8 +827,6 @@ sub print_output {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data msdefender:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "mdatp.service" ); 
       }
-   } else {
-      $common_output_data = "$common_output_data msdefender:no";
    }
    #
    # Add status for dcservice.service for ManageEngine Unified Endpoint Management (UEMS) Agent (also known as Desktop Central Agent)
@@ -845,14 +834,10 @@ sub print_output {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data manageengine:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "dcservice.service" ); 
       }
-   } else {
-      $common_output_data = "$common_output_data manageengine:no";
    }
-
    #
    #
    #
-
    #
    $output_message = "$common_output_data | $perf_data \n";
    print "$output_message";       #print output to screen
