@@ -765,28 +765,28 @@ sub print_output {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data fail2ban:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "fail2ban.service" ); 
       }
-   }
+   } else { $common_output_data = "$common_output_data fail2ban:no "; }
    #
    # Add sssd status
    if ( (-f "/usr/lib/systemd/system/sssd.service") || (-f "/etc/systemd/system/sssd.service") ) {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data sssd:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "sssd.service" ); 
       }
-   }
+   } else { $common_output_data = "$common_output_data sssd:no "; }
    #
    # Add auditd status
    if ( -f "/usr/lib/systemd/system/auditd.service") {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data auditd:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "auditd.service" ); 
       }
-   }
+   } else { $common_output_data = "$common_output_data auditd:no "; }
    #
    # Add fapolicyd status
    if ( -f "/usr/lib/systemd/system/fapolicyd.service") {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data fapolicyd:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "fapolicyd.service" ); 
       }
-   }
+   } else { $common_output_data = "$common_output_data fapolicyd:no "; }
    #
    # Add AIDE (Advanced Intrusion Dection Environment) status, this is not a systemd service, so we check it a little differently.
    foreach $key (sort keys %daemons) {
@@ -799,42 +799,42 @@ sub print_output {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data arcticwolf:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "arcticwolfagent.service" ); 
       }
-   }
+   } else { $common_output_data = "$common_output_data arcticwolf:no "; }
    #
    # Add SentinelOne status
    if ( -f "/etc/systemd/system/sentinelone.service") {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data sentinelone:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "sentinelone.service" ); 
       }
-   }
+   } else { $common_output_data = "$common_output_data sentinelone:no "; }
    #
    # Add Crowdstrike Falcon Sensor status
    if ( -f "/usr/lib/systemd/system/falcon-sensor.service") {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data crowdstrike:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "falcon-sensor.service" ); 
       }
-   }
+   } else { $common_output_data = "$common_output_data crowdstrike:no "; }
    #
    # Add ClamAV status
    if ( -f "/usr/lib/systemd/system/clamav-daemon.service") {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data clamav:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "clamav-daemon.service" ); 
       }
-   }
+   } else { $common_output_data = "$common_output_data clamav:no "; }
    #
    # Add Microsoft Defender Endpoint status
    if ( -f "/usr/lib/systemd/system/mdatp.service") {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data msdefender:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "mdatp.service" ); 
       }
-   }
+   } else { $common_output_data = "$common_output_data msdefender:no "; }
    #
    # Add status for dcservice.service for ManageEngine Unified Endpoint Management (UEMS) Agent (also known as Desktop Central Agent)
    if ( (-f "/usr/lib/systemd/system/dcservice.service") || (-f "/etc/systemd/system/dcservice.service") ) {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data manageengine:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "dcservice.service" ); 
       }
-   }
+   } else { $common_output_data = "$common_output_data manageengine:no "; }
    #
    #
    #
