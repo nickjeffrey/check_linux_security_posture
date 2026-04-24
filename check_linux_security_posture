@@ -622,9 +622,9 @@ sub check_assorted_daemons {
       push (@monitored_daemons,"clamav-daemon.service");
       print "   found /usr/lib/systemd/system/clamav-daemon.service, adding clamav-daemon.service to list of monitored daemons \n" if ($verbose eq "yes");
    }
-   if ( -f "/usr/lib/systemd/system/clamd@.service") {  RHEL
-      push (@monitored_daemons,"clamd@scan.service");
-      print "   found /usr/lib/systemd/system/clamd@.service, adding clamd@scan.service to list of monitored daemons \n" if ($verbose eq "yes");
+   if ( -f '/usr/lib/systemd/system/clamd@.service') {  #RHEL
+      push (@monitored_daemons,"clamd\@scan.service");
+      print "   found /usr/lib/systemd/system/clamd\@.service, adding clamd\@scan.service to list of monitored daemons \n" if ($verbose eq "yes");
    }
    #
    # Checking for Microsoft Defender for Endpoint
@@ -823,11 +823,13 @@ sub print_output {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data clamav:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "clamav-daemon.service" ); 
       }
-   elseif ( -f "/usr/lib/systemd/system/clamd@.service") {
+   }
+   elsif ( -f '/usr/lib/systemd/system/clamd@.service') {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data clamav:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "clamd@scan.service" ); 
       }
-   } else { $common_output_data = "$common_output_data clamav:no "; }
+   } 
+   else { $common_output_data = "$common_output_data clamav:no "; }
    #
    # Add Microsoft Defender Endpoint status
    if ( -f "/usr/lib/systemd/system/mdatp.service") {
