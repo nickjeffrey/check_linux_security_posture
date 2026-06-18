@@ -21,6 +21,7 @@
 # 2026/01/06	njeffrey	Add dcservice.service for ManageEngine Unified Endpoint Management (UEMS) Agent (also known as Desktop Central Agent)
 # 2026/01/08	njeffrey	Add $pending_security_updates
 # 2026/01/19	njeffrey	Add sssd.service for System Security Services Daemon
+# 2026/06/17	njeffrey	Add pve-firewall.service for proxmox hosts
 
 
 # NOTES
@@ -558,7 +559,7 @@ sub check_assorted_daemons {
    }
    #
    # Checking for firewall daemon
-   # firewalld.service on RHEL/CentOS, ufw.service on Debian/Ubuntu
+   # firewalld.service on RHEL/CentOS, ufw.service on Debian/Ubuntu, pve-firewall.service on proxmox
    if ( -f "/usr/lib/systemd/system/firewalld.service") {
       push (@monitored_daemons,"firewalld.service");
       print "   found /usr/lib/systemd/system/firewalld.service, adding firewalld.service to list of monitored daemons \n" if ($verbose eq "yes");
@@ -566,6 +567,10 @@ sub check_assorted_daemons {
    if ( -f "/usr/lib/systemd/system/ufw.service") {
       push (@monitored_daemons,"ufw.service");
       print "   found /usr/lib/systemd/system/ufw.service, adding ufw.service to list of monitored daemons \n" if ($verbose eq "yes");
+   }
+   if ( -f "/usr/lib/systemd/system/pve-firewall.service") {
+      push (@monitored_daemons,"pve-firewall.service");
+      print "   found /usr/lib/systemd/system/pve-firewall.service, adding pve-firewall.service to list of monitored daemons \n" if ($verbose eq "yes");
    }
    #
    # Checking for audit daemon
