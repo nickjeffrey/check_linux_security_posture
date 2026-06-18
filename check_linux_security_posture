@@ -764,6 +764,10 @@ sub print_output {
       foreach $key (sort keys %daemons) {
          $common_output_data = "$common_output_data firewall:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "ufw.service" ); 
       }
+   } elsif ( -f "/usr/lib/systemd/system/pve-firewall.service") {
+      foreach $key (sort keys %daemons) {
+         $common_output_data = "$common_output_data firewall:$daemons{$key}{active}" if ( $daemons{$key}{unit} eq "pve-firewall.service" ); 
+      }
    } else {
       $common_output_data = "$common_output_data firewall:unknown";
    }
